@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Shield, 
   ShieldAlert, 
@@ -32,6 +32,10 @@ function App() {
   const [activeTab, setActiveTab] = useState('overview');
   const [history, setHistory] = useState([]);
   
+  // Terminal log state for scanning phase
+  const [termLogs, setTermLogs] = useState([]);
+  const terminalEndRef = useRef(null);
+
   // Track active remediation tab for headers (e.g., {'Content-Security-Policy': 'nginx'})
   const [activeRemedTab, setActiveRemedTab] = useState({});
   const [copiedHeader, setCopiedHeader] = useState(null);
@@ -43,11 +47,50 @@ function App() {
       try {
         setHistory(JSON.parse(saved));
       } catch (e) {
-        // Clear corrupt history
         localStorage.removeItem('sentinelscan_history');
       }
     }
   }, []);
+
+  // Autoscroll terminal
+  useEffect(() => {
+    if (terminalEndRef.current) {
+      terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [termLogs]);
+
+  const simulateTerminalLogs = () => {
+    setTermLogs([]);
+    const logs = [
+      '[~] Resolvendo IP do domínio alvo...',
+      '[~] Conectando com a API GeoIP...',
+      '[+] IP resolvido: carregando provedor de nuvem...',
+      '[~] Iniciando varredura passiva de cabeçalhos...',
+      '[!] Analisando ausência de CSP e HSTS...',
+      '[~] Conectando soquete TLS/SSL na porta 443...',
+      '[+] Soquete seguro conectado: validando cadeia de certificação...',
+      '[~] Probição de injeção ativa contra banco de dados (SQL Injection)...',
+      '[~] Testando injeção de scripts no DOM (Reflected XSS)...',
+      '[~] Verificando permissões de diretórios para vazamento de .git/.env...',
+      '[~] Resolvendo registros DNS SPF e políticas DMARC...',
+      '[~] Escaneando portas abertas de administração (FTP, SSH, Telnet)...',
+      '[+] Scanner completo! Compilando relatório final...'
+    ];
+
+    let currentLogIndex = 0;
+    setTermLogs([logs[0]]);
+
+    const interval = setInterval(() => {
+      currentLogIndex++;
+      if (currentLogIndex < logs.length) {
+        setTermLogs(prev => [...prev, logs[currentLogIndex]]);
+      } else {
+        clearInterval(interval);
+      }
+    }, 380);
+
+    return interval;
+  };
 
   const saveToHistory = (scanResult) => {
     const newItem = {
@@ -58,7 +101,6 @@ function App() {
       time: new Date().toLocaleTimeString()
     };
 
-    // Filter out existing searches for same hostname to avoid duplicates
     const filtered = history.filter(item => item.hostname !== newItem.hostname);
     const updated = [newItem, ...filtered].slice(0, 5); // Keep last 5
 
@@ -75,6 +117,8 @@ function App() {
     setError(null);
     setResult(null);
     setActiveTab('overview');
+
+    const logInterval = simulateTerminalLogs();
 
     try {
       const response = await fetch('http://localhost:5001/api/scan', {
@@ -97,6 +141,7 @@ function App() {
     } catch (err) {
       setError(err.message || 'An error occurred connecting to the scanning server.');
     } finally {
+      clearInterval(logInterval);
       setLoading(false);
     }
   };
@@ -134,6 +179,20 @@ function App() {
     }
   };
 
+  // Convert country code to emoji flag
+  const getFlagEmoji = (countryCode) => {
+    if (!countryCode) return '🌐';
+    const codePoints = countryCode
+      .toUpperCase()
+      .split('')
+      .map(char => 127397 + char.charCodeAt(0));
+    try {
+      return String.fromCodePoint(...codePoints);
+    } catch (e) {
+      return '🌐';
+    }
+  };
+
   const strokeDashoffset = result ? 440 - (440 * result.overallScore) / 100 : 440;
 
   const getScoreColor = (score) => {
@@ -155,6 +214,83 @@ function App() {
         return 'var(--color-success)';
     }
   };
+
+  // Compile counts of findings for severity counters banner
+  const getSeverityCounts = () => {
+    if (!result) return { critical: 0, high: 0, medium: 0, low: 0, secure: 0 };
+    
+    let critical = 0, high = 0, medium = 0, low = 0, secure = 0;
+
+    // Headers
+    result.sections.headers.findings.forEach(f => {
+      if (f.status === 'Missing' || f.status === 'Exposed') {
+        if (f.severity === 'Critical') critical++;
+        else if (f.severity === 'High') high++;
+        else if (f.severity === 'Medium') medium++;
+        else if (f.severity === 'Low') low++;
+      } else {
+        secure++;
+      }
+    });
+
+    // SSL
+    if (!result.sections.ssl.valid) {
+      critical++;
+    } else {
+      result.sections.ssl.issues.forEach(issue => {
+        if (issue.includes('expired') || issue.includes('trusted')) high++;
+        else medium++;
+      });
+      if (result.sections.ssl.issues.length === 0) secure++;
+    }
+
+    // Exposed files
+    result.sections.files.findings.forEach(f => {
+      if (f.status === 'Exposed') {
+        if (f.severity === 'Critical') critical++;
+        else if (f.severity === 'High') high++;
+      } else {
+        secure++;
+      }
+    });
+
+    // DNS
+    result.sections.dns.spf.issues.forEach(issue => {
+      if (issue.includes('No SPF')) high++;
+      else medium++;
+    });
+    result.sections.dns.dmarc.issues.forEach(issue => {
+      if (issue.includes('No DMARC')) high++;
+      else medium++;
+    });
+    if (result.sections.dns.spf.present && result.sections.dns.spf.issues.length === 0) secure++;
+    if (result.sections.dns.dmarc.present && result.sections.dns.dmarc.issues.length === 0) secure++;
+
+    // Hacking
+    result.sections.hacking.findings.forEach(f => {
+      if (f.status === 'Vulnerable' || f.status === 'Weak') {
+        if (f.severity === 'Critical') critical++;
+        else if (f.severity === 'High') high++;
+        else if (f.severity === 'Medium') medium++;
+      } else {
+        secure++;
+      }
+    });
+
+    // Ports
+    result.sections.ports.findings.forEach(f => {
+      if (f.status === 'Open' && f.risk !== 'None' && f.risk !== 'Info') {
+        if (f.risk === 'Critical') critical++;
+        else if (f.risk === 'High') high++;
+        else if (f.risk === 'Medium') medium++;
+        else if (f.risk === 'Low') low++;
+      }
+    });
+
+    return { critical, high, medium, low, secure };
+  };
+
+  const counts = getSeverityCounts();
 
   return (
     <div className="app-container">
@@ -210,6 +346,32 @@ function App() {
               </div>
             )}
           </div>
+
+          {/* Hosting Intelligence (Server Info) Card */}
+          {result && result.serverInfo && (
+            <div className="glass-panel sidebar-info" style={{ marginBottom: '1.5rem', padding: '1.25rem' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1rem', marginBottom: '1rem' }}>
+                <Server size={16} color="var(--color-accent)" /> Servidor & Hospedagem
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', fontSize: '0.85rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.4rem' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Endereço IP:</span>
+                  <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>{result.serverInfo.ip}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.4rem' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Hospedado em:</span>
+                  <span style={{ fontWeight: 'bold', color: 'var(--text-primary)', display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                    <span>{getFlagEmoji(result.serverInfo.countryCode)}</span>
+                    <span>{result.serverInfo.city}, {result.serverInfo.country}</span>
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '0.2rem' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Provedor (ISP):</span>
+                  <span style={{ fontWeight: 'bold', color: 'var(--color-accent)', textAlign: 'right', maxWidth: '170px', wordBreak: 'break-all' }}>{result.serverInfo.isp}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* History Panel */}
           {history.length > 0 && !loading && (
@@ -356,9 +518,22 @@ function App() {
         {/* Right Column */}
         <section>
           {loading && (
-            <div className="glass-panel loader-container">
-              <div className="cyber-spinner"></div>
-              <p className="loader-text">Executando probes ativos de SQLi, XSS, port-scanning e SSL...</p>
+            <div className="glass-panel" style={{ padding: '1.5rem', background: '#0a0915', minHeight: '400px', display: 'flex', flexDirection: 'column', border: '1px solid rgba(139, 92, 246, 0.25)', borderRadius: '16px', boxShadow: '0 8px 32px 0 rgba(0,0,0,0.5)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '0.5rem', marginBottom: '1rem' }}>
+                <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#ef4444' }}></div>
+                <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#f59e0b' }}></div>
+                <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#10b981' }}></div>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontFamily: 'monospace', marginLeft: '0.5rem' }}>terminal@sentinelscan: ~</span>
+              </div>
+              <div style={{ flexGrow: 1, fontFamily: 'monospace', fontSize: '0.85rem', color: '#10b981', display: 'flex', flexDirection: 'column', gap: '0.4rem', maxHeight: '300px', overflowY: 'auto' }}>
+                {termLogs.map((log, idx) => (
+                  <div key={idx} style={{ wordBreak: 'break-all' }}>{log}</div>
+                ))}
+                <div ref={terminalEndRef}></div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: '1.5rem' }}>
+                <div className="cyber-spinner" style={{ width: '36px', height: '36px' }}></div>
+              </div>
             </div>
           )}
 
@@ -397,9 +572,42 @@ function App() {
               </div>
 
               <div className="tab-content">
-                {/* 1. OVERVIEW TAB */}
+                {/* 1. OVERVIEW TAB WITH SEVERITY BANNER */}
                 {activeTab === 'overview' && (
                   <div>
+                    {/* Severity Counter Banner */}
+                    <div style={{ 
+                      display: 'grid', 
+                      gridTemplateColumns: 'repeat(5, 1fr)', 
+                      gap: '0.5rem', 
+                      marginBottom: '1.5rem',
+                      background: 'rgba(255,255,255,0.01)',
+                      border: '1px solid var(--border-color)',
+                      padding: '0.75rem',
+                      borderRadius: '12px'
+                    }}>
+                      <div style={{ textAlign: 'center', borderRight: '1px solid var(--border-color)' }}>
+                        <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: 'var(--color-danger)' }}>{counts.critical}</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Crítico</div>
+                      </div>
+                      <div style={{ textAlign: 'center', borderRight: '1px solid var(--border-color)' }}>
+                        <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: 'var(--color-danger)' }}>{counts.high}</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Alto</div>
+                      </div>
+                      <div style={{ textAlign: 'center', borderRight: '1px solid var(--border-color)' }}>
+                        <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: 'var(--color-warning)' }}>{counts.medium}</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Médio</div>
+                      </div>
+                      <div style={{ textAlign: 'center', borderRight: '1px solid var(--border-color)' }}>
+                        <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: 'var(--color-info)' }}>{counts.low}</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Baixo</div>
+                      </div>
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: 'var(--color-success)' }}>{counts.secure}</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Seguro</div>
+                      </div>
+                    </div>
+
                     <h3 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '1.25rem' }}>Resumo de Vulnerabilidades</h3>
                     <div className="findings-container">
                       {(() => {

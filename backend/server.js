@@ -743,11 +743,44 @@ async function scanPorts(hostname) {
 
     await Promise.all(checks);
   } catch (err) {
-    // Fallback if DNS resolve fails
+    // Ignore
   }
 
   results.score = Math.max(0, results.score);
   return results;
+}
+
+// 7. Domain Host Geolocation and IP Resolver
+async function scanServerInfo(hostname) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`http://ip-api.com/json/${hostname}`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    const data = await res.json();
+    if (data.status === 'success') {
+      return {
+        ip: data.query,
+        country: data.country,
+        countryCode: data.countryCode,
+        city: data.city,
+        isp: data.isp,
+        org: data.org
+      };
+    }
+  } catch (e) {
+    // Ignore and fallback
+  }
+  return {
+    ip: 'Unknown',
+    country: 'Unknown',
+    countryCode: '',
+    city: 'Unknown',
+    isp: 'Unknown',
+    org: 'Unknown'
+  };
 }
 
 // Main API Route
@@ -761,14 +794,15 @@ app.post('/api/scan', async (req, res) => {
   try {
     const target = parseTarget(url);
 
-    // Run all 5 scans in parallel
-    const [headers, ssl, files, dnsResult, hacking, ports] = await Promise.all([
+    // Run all scans concurrently
+    const [headers, ssl, files, dnsResult, hacking, ports, serverInfo] = await Promise.all([
       scanHeaders(target.url),
       scanSSL(target.hostname),
       scanExposedFiles(target.url),
       scanDNS(target.hostname),
       scanHacking(target.url, target.hostname),
-      scanPorts(target.hostname)
+      scanPorts(target.hostname),
+      scanServerInfo(target.hostname)
     ]);
 
     // Calculate Overall Security Grade incorporating active hacking and port tests
@@ -791,7 +825,8 @@ app.post('/api/scan', async (req, res) => {
         dns: dnsResult,
         hacking,
         ports
-      }
+      },
+      serverInfo
     });
 
   } catch (err) {
