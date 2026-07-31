@@ -21,7 +21,10 @@ import {
   Download,
   List,
   Copy,
-  Check
+  Check,
+  Send,
+  Plus,
+  Trash2
 } from 'lucide-react';
 
 function App() {
@@ -39,6 +42,17 @@ function App() {
   // Track active remediation tab for headers (e.g., {'Content-Security-Policy': 'nginx'})
   const [activeRemedTab, setActiveRemedTab] = useState({});
   const [copiedHeader, setCopiedHeader] = useState(null);
+
+  // Exploit Playground States (Burp Repeater style)
+  const [exploitMethod, setExploitMethod] = useState('GET');
+  const [exploitPath, setExploitPath] = useState('');
+  const [exploitHeaders, setExploitHeaders] = useState([{ key: 'X-Exploit-Header', value: 'SentinelTest' }]);
+  const [exploitBody, setExploitBody] = useState('');
+  const [exploitMatchType, setExploitMatchType] = useState('status');
+  const [exploitMatchValue, setExploitMatchValue] = useState('200');
+  const [exploitLoading, setExploitLoading] = useState(false);
+  const [exploitResult, setExploitResult] = useState(null);
+  const [exploitError, setExploitError] = useState(null);
 
   // Load scan history from localStorage
   useEffect(() => {
@@ -63,24 +77,27 @@ function App() {
     setTermLogs([]);
     const logs = [
       '[~] Resolvendo IP do domínio alvo...',
-      '[~] Conectando com a API GeoIP e resolvendo ISP...',
-      '[+] IP resolvido: carregando informações de geolocalização...',
-      '[~] Iniciando varredura passiva de cabeçalhos...',
+      '[~] Conectando com a API GeoIP...',
+      '[+] IP resolvido: carregando provedor de nuvem e país de hospedagem...',
+      '[~] Inicializando spider crawler para mapeamento de links...',
+      '[+] Spider Crawler finalizado: subpáginas mapeadas com sucesso.',
+      '[~] Iniciando varredura passiva de cabeçalhos de segurança...',
       '[!] Analisando ausência de CSP e HSTS...',
       '[~] Conectando soquete TLS/SSL na porta 443...',
-      '[+] Soquete seguro conectado: validando cadeia de certificação...',
-      '[~] Iniciando testes ativos OWASP Top 10...',
+      '[+] Soquete seguro conectado: validando certificado e cifras...',
+      '[~] Executando brute-force de subdomínios via DNS queries paralelas...',
+      '[+] Subdomínios ativos mapeados: checando portas abertas...',
+      '[~] Iniciando testes ativos OWASP Top 10 em todas as rotas...',
       '[~] Testando injeção ativa SQL Injection (payload: \'?id=1\'\')...',
       '[~] Testando Reflected XSS (payload: \'<sentinel-xss-test>\')...',
-      '[~] Procura por vazamento crítico de repositório (/.git/config)...',
-      '[~] Testando enumeração de usuários WordPress (/wp-json/wp/v2/users)...',
-      '[~] Fuzzing de backups expostos (/backup.sql, /db.sql, /dump.sql)...',
+      '[~] Fuzzing de arquivos críticos (/.git/config, /.env, /wp-config.php.bak)...',
+      '[~] Buscando arquivos de backups expostos (/backup.sql, /db.sql)...',
       '[~] Testando vulnerabilidade de Open Redirect (?redirect=https://google.com)...',
       '[~] Checando Verb Tampering (métodos PUT e DELETE)...',
       '[~] Verificando APIs abertas e rotas Swagger (/swagger-ui.html)...',
       '[~] Identificando plataforma CMS (WordPress/Drupal/Joomla) e analisando CVEs...',
       '[~] Escaneando portas TCP administrativas expostas (FTP, SSH, Telnet)...',
-      '[+] Varredura de hacking concluída! Compilando relatório final...'
+      '[+] Varredura completa! Compilando relatório final...'
     ];
 
     let currentLogIndex = 0;
@@ -93,7 +110,7 @@ function App() {
       } else {
         clearInterval(interval);
       }
-    }, 380);
+    }, 280);
 
     return interval;
   };
@@ -122,6 +139,7 @@ function App() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setExploitResult(null);
     setActiveTab('overview');
 
     const logInterval = simulateTerminalLogs();
@@ -150,6 +168,60 @@ function App() {
       clearInterval(logInterval);
       setLoading(false);
     }
+  };
+
+  // Run Custom Exploit
+  const handleExploit = async (e) => {
+    e.preventDefault();
+    if (!result) return;
+
+    setExploitLoading(true);
+    setExploitError(null);
+    setExploitResult(null);
+
+    try {
+      const response = await fetch('http://localhost:5001/api/exploit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          target: result.target.url,
+          method: exploitMethod,
+          path: exploitPath,
+          headers: exploitHeaders,
+          body: exploitBody,
+          matchType: exploitMatchType,
+          matchValue: exploitMatchValue
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || 'Exploit request failed');
+      }
+
+      const data = await response.json();
+      setExploitResult(data);
+    } catch (err) {
+      setExploitError(err.message || 'Failed to execute custom request.');
+    } finally {
+      setExploitLoading(false);
+    }
+  };
+
+  const addHeaderRow = () => {
+    setExploitHeaders([...exploitHeaders, { key: '', value: '' }]);
+  };
+
+  const removeHeaderRow = (index) => {
+    setExploitHeaders(exploitHeaders.filter((_, i) => i !== index));
+  };
+
+  const updateHeaderRow = (index, key, value) => {
+    const updated = [...exploitHeaders];
+    updated[index] = { key, value };
+    setExploitHeaders(updated);
   };
 
   const exportJSON = () => {
@@ -185,7 +257,6 @@ function App() {
     }
   };
 
-  // Convert country code to emoji flag
   const getFlagEmoji = (countryCode) => {
     if (!countryCode) return '🌐';
     const codePoints = countryCode
@@ -221,13 +292,10 @@ function App() {
     }
   };
 
-  // Compile counts of findings for severity counters banner
   const getSeverityCounts = () => {
     if (!result) return { critical: 0, high: 0, medium: 0, low: 0, secure: 0 };
-    
     let critical = 0, high = 0, medium = 0, low = 0, secure = 0;
 
-    // Headers
     result.sections.headers.findings.forEach(f => {
       if (f.status === 'Missing' || f.status === 'Exposed') {
         if (f.severity === 'Critical') critical++;
@@ -239,7 +307,6 @@ function App() {
       }
     });
 
-    // SSL
     if (!result.sections.ssl.valid) {
       critical++;
     } else {
@@ -250,7 +317,6 @@ function App() {
       if (result.sections.ssl.issues.length === 0) secure++;
     }
 
-    // Exposed files
     result.sections.files.findings.forEach(f => {
       if (f.status === 'Exposed') {
         if (f.severity === 'Critical') critical++;
@@ -260,7 +326,6 @@ function App() {
       }
     });
 
-    // DNS
     result.sections.dns.spf.issues.forEach(issue => {
       if (issue.includes('No SPF')) high++;
       else medium++;
@@ -272,7 +337,6 @@ function App() {
     if (result.sections.dns.spf.present && result.sections.dns.spf.issues.length === 0) secure++;
     if (result.sections.dns.dmarc.present && result.sections.dns.dmarc.issues.length === 0) secure++;
 
-    // Hacking
     result.sections.hacking.findings.forEach(f => {
       if (f.status === 'Vulnerable' || f.status === 'Weak') {
         if (f.severity === 'Critical') critical++;
@@ -283,7 +347,6 @@ function App() {
       }
     });
 
-    // Ports
     result.sections.ports.findings.forEach(f => {
       if (f.status === 'Open' && f.risk !== 'None' && f.risk !== 'Info') {
         if (f.risk === 'Critical') critical++;
@@ -371,9 +434,13 @@ function App() {
                     <span>{result.serverInfo.city}, {result.serverInfo.country}</span>
                   </span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '0.2rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.4rem' }}>
                   <span style={{ color: 'var(--text-secondary)' }}>Provedor (ISP):</span>
                   <span style={{ fontWeight: 'bold', color: 'var(--color-accent)', textAlign: 'right', maxWidth: '170px', wordBreak: 'break-all' }}>{result.serverInfo.isp}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', paddingBottom: '0.2rem' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Páginas Rasteadas:</span>
+                  <span style={{ fontWeight: 'bold', color: 'var(--text-primary)' }}>{result.crawledUrlsCount || 1} rotas</span>
                 </div>
               </div>
             </div>
@@ -560,6 +627,12 @@ function App() {
                 <button onClick={() => setActiveTab('hacking')} className={`tab-btn ${activeTab === 'hacking' ? 'active' : ''}`} style={{ fontWeight: 'bold' }}>
                   <Terminal size={16} /> Hacking & Bugs
                 </button>
+                <button onClick={() => setActiveTab('subdomains')} className={`tab-btn ${activeTab === 'subdomains' ? 'active' : ''}`}>
+                  <Globe size={16} /> Superfície de Ataque
+                </button>
+                <button onClick={() => setActiveTab('exploit')} className={`tab-btn ${activeTab === 'exploit' ? 'active' : ''}`} style={{ color: 'var(--color-accent)' }}>
+                  <Send size={16} /> Exploit Playground
+                </button>
                 <button onClick={() => setActiveTab('ports')} className={`tab-btn ${activeTab === 'ports' ? 'active' : ''}`}>
                   <Bug size={16} /> Portas Abertas
                 </button>
@@ -622,17 +695,17 @@ function App() {
                         // Active hacking
                         result.sections.hacking.findings
                           .filter(f => f.status === 'Vulnerable' || f.status === 'Weak')
-                          .forEach(f => criticalFindings.push({ header: f.name, severity: f.severity, desc: f.desc, fix: f.fix, section: 'hacking' }));
+                          .forEach(f => criticalFindings.push({ header: f.name, severity: f.severity, desc: f.desc, fix: f.fix, path: f.path }));
 
                         // Ports
                         result.sections.ports.findings
                           .filter(f => f.status === 'Open' && f.risk !== 'None' && f.risk !== 'Info')
-                          .forEach(f => criticalFindings.push({ header: `Porta Aberta: ${f.port} (${f.name})`, severity: f.risk, desc: f.desc, fix: 'Feche a porta no firewall ou configure o serviço para escutar apenas localmente (localhost).', section: 'ports' }));
+                          .forEach(f => criticalFindings.push({ header: `Porta Aberta: ${f.port} (${f.name})`, severity: f.risk, desc: f.desc, fix: 'Feche a porta no firewall ou configure o serviço para escutar apenas localmente (localhost).' }));
 
                         // Missing headers
                         result.sections.headers.findings
                           .filter(f => f.status === 'Missing' || f.status === 'Exposed')
-                          .forEach(f => criticalFindings.push({ ...f, section: 'headers', type: 'Header missing' }));
+                          .forEach(f => criticalFindings.push({ ...f, path: result.target.url }));
                         
                         // SSL
                         if (!result.sections.ssl.valid) {
@@ -640,8 +713,7 @@ function App() {
                             header: 'Certificado SSL Inválido',
                             severity: 'Critical',
                             desc: result.sections.ssl.error,
-                            fix: 'Renove seu certificado SSL ou garanta que ele seja emitido por uma autoridade de certificação confiável.',
-                            section: 'ssl'
+                            fix: 'Renove seu certificado SSL ou garanta que ele seja emitido por uma autoridade de certificação confiável.'
                           });
                         } else {
                           result.sections.ssl.issues.forEach(issue => {
@@ -649,8 +721,7 @@ function App() {
                               header: 'Problema no Certificado SSL',
                               severity: issue.includes('expired') || issue.includes('trusted') ? 'High' : 'Medium',
                               desc: issue,
-                              fix: 'Revise suas configurações de TLS/SSL no servidor e instale certificados válidos.',
-                              section: 'ssl'
+                              fix: 'Revise suas configurações de TLS/SSL no servidor e instale certificados válidos.'
                             });
                           });
                         }
@@ -658,14 +729,14 @@ function App() {
                         // Exposed files
                         result.sections.files.findings
                           .filter(f => f.status === 'Exposed')
-                          .forEach(f => criticalFindings.push({ header: f.name, severity: f.severity, desc: f.desc, fix: f.fix, section: 'files' }));
+                          .forEach(f => criticalFindings.push({ header: f.name, severity: f.severity, desc: f.desc, fix: f.fix, path: result.target.url + f.path }));
 
                         // DNS
                         result.sections.dns.spf.issues.forEach(issue => {
-                          criticalFindings.push({ header: 'Falha no Registro SPF', severity: issue.includes('No SPF') ? 'High' : 'Medium', desc: issue, fix: 'Adicione um registro TXT com a política de envio SPF para o seu provedor de email.', section: 'dns' });
+                          criticalFindings.push({ header: 'Falha no Registro SPF', severity: issue.includes('No SPF') ? 'High' : 'Medium', desc: issue, fix: 'Adicione um registro TXT com a política de envio SPF para o seu provedor de email.' });
                         });
                         result.sections.dns.dmarc.issues.forEach(issue => {
-                          criticalFindings.push({ header: 'Falha na Política DMARC', severity: issue.includes('No DMARC') ? 'High' : 'Medium', desc: issue, fix: 'Adicione um registro TXT DMARC com as políticas de ação (rejeição, quarentena ou monitoramento).', section: 'dns' });
+                          criticalFindings.push({ header: 'Falha na Política DMARC', severity: issue.includes('No DMARC') ? 'High' : 'Medium', desc: issue, fix: 'Adicione um registro TXT DMARC com as políticas de ação (rejeição, quarentena ou monitoramento).' });
                         });
 
                         if (criticalFindings.length === 0) {
@@ -698,6 +769,11 @@ function App() {
                             </div>
                             <div className="finding-body">
                               <p>{finding.desc}</p>
+                              {finding.path && (
+                                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem', wordBreak: 'break-all' }}>
+                                  <strong>Caminho vulnerável:</strong> <code>{finding.path}</code>
+                                </p>
+                              )}
                               {finding.fix && (
                                 <div className="finding-recommendation">
                                   <span className="recommendation-lbl">Como mitigar / corrigir:</span>
@@ -741,6 +817,11 @@ function App() {
                             ) : (
                               <>
                                 <p>{f.desc}</p>
+                                {f.path && (
+                                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem', wordBreak: 'break-all' }}>
+                                    Caminho vulnerável: <code>{f.path}</code>
+                                  </p>
+                                )}
                                 <div className="finding-recommendation">
                                   <span className="recommendation-lbl">Mitigação do Desenvolvedor:</span>
                                   <p>{f.fix}</p>
@@ -754,7 +835,234 @@ function App() {
                   </div>
                 )}
 
-                {/* 3. PORTS TAB */}
+                {/* 3. SUBDOMAINS TAB (DNS ATTACK SURFACE) */}
+                {activeTab === 'subdomains' && (
+                  <div>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '0.75rem' }}>Mapeamento de Subdomínios (Superfície de Ataque)</h3>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+                      Fazemos buscas de DNS em busca de hosts e painéis administrativos expostos. Subdomínios inativos podem estar sujeitos a sequestro (Subdomain Takeover).
+                    </p>
+                    {result.sections.subdomains.length === 0 ? (
+                      <div className="empty-state" style={{ padding: '2rem' }}>
+                        <CheckCircle2 size={48} color="var(--color-success)" style={{ marginBottom: '1rem' }} />
+                        <h3>Nenhum subdomínio ativo mapeado</h3>
+                        <p>Nenhum dos subdomínios comuns respondeu às consultas de DNS, o que reduz bastante a superfície de ataque externa.</p>
+                      </div>
+                    ) : (
+                      <div className="dns-table-wrapper">
+                        <table className="dns-table">
+                          <thead>
+                            <tr>
+                              <th>Subdomínio</th>
+                              <th>Endereço IP</th>
+                              <th>Portas Web Ativas</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {result.sections.subdomains.map((sub, idx) => (
+                              <tr key={idx}>
+                                <td style={{ fontWeight: 'bold', color: 'var(--color-accent)' }}>{sub.subdomain}</td>
+                                <td>{sub.ip}</td>
+                                <td>
+                                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                    {sub.ports.map((p, pidx) => (
+                                      <span 
+                                        key={pidx} 
+                                        className="badge" 
+                                        style={{ 
+                                          background: p.status === 'Open' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                                          color: p.status === 'Open' ? 'var(--color-success)' : 'var(--color-danger)',
+                                          border: `1px solid ${p.status === 'Open' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+                                        }}
+                                      >
+                                        Porta {p.port} ({p.name})
+                                      </span>
+                                    ))}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 4. EXPLOIT PLAYGROUND TAB (Nuclei-style API test) */}
+                {activeTab === 'exploit' && (
+                  <div>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '0.5rem' }}>Exploit Playground (Burp Repeater)</h3>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+                      Crie requisições HTTP manuais customizadas e configure regras de correspondência em tempo real para injetar payloads ou testar vulnerabilidades específicas.
+                    </p>
+
+                    <form onSubmit={handleExploit} className="glass-panel" style={{ padding: '1.5rem', background: 'rgba(255,255,255,0.015)' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                        <select 
+                          value={exploitMethod} 
+                          onChange={(e) => setExploitMethod(e.target.value)}
+                          className="search-input"
+                          style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.05)' }}
+                        >
+                          <option value="GET">GET</option>
+                          <option value="POST">POST</option>
+                          <option value="PUT">PUT</option>
+                          <option value="DELETE">DELETE</option>
+                        </select>
+                        <input 
+                          type="text" 
+                          placeholder="Rota (ex: /wp-json/wp/v2/users ou /.git/config)" 
+                          value={exploitPath}
+                          onChange={(e) => setExploitPath(e.target.value)}
+                          className="search-input"
+                          style={{ padding: '0.75rem' }}
+                        />
+                      </div>
+
+                      {/* Header grids */}
+                      <div style={{ marginBottom: '1.25rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                          <span style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>Cabeçalhos HTTP (Request Headers)</span>
+                          <button type="button" onClick={addHeaderRow} className="btn-scan" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', display: 'flex', gap: '0.25rem', alignItems: 'center', background: 'var(--color-primary-glow)' }}>
+                            <Plus size={12} /> Add Header
+                          </button>
+                        </div>
+                        {exploitHeaders.map((header, idx) => (
+                          <div key={idx} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                            <input 
+                              type="text" 
+                              placeholder="Key (ex: Content-Type)" 
+                              value={header.key}
+                              onChange={(e) => updateHeaderRow(idx, e.target.value, header.value)}
+                              className="search-input"
+                              style={{ padding: '0.5rem', fontSize: '0.8rem' }}
+                            />
+                            <input 
+                              type="text" 
+                              placeholder="Value" 
+                              value={header.value}
+                              onChange={(e) => updateHeaderRow(idx, header.key, e.target.value)}
+                              className="search-input"
+                              style={{ padding: '0.5rem', fontSize: '0.8rem' }}
+                            />
+                            <button type="button" onClick={() => removeHeaderRow(idx)} style={{ background: 'none', border: 'none', color: 'var(--color-danger)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Body area */}
+                      {exploitMethod !== 'GET' && exploitMethod !== 'HEAD' && (
+                        <div style={{ marginBottom: '1.25rem' }}>
+                          <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>Corpo da Requisição (Request Body)</label>
+                          <textarea 
+                            value={exploitBody}
+                            onChange={(e) => setExploitBody(e.target.value)}
+                            className="search-input"
+                            style={{ height: '80px', fontFamily: 'monospace', fontSize: '0.8rem', padding: '0.5rem' }}
+                            placeholder='{"username": "admin"}'
+                          />
+                        </div>
+                      )}
+
+                      {/* Matching rules */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>Validador de Exploit (Match Rule)</label>
+                          <select 
+                            value={exploitMatchType}
+                            onChange={(e) => setExploitMatchType(e.target.value)}
+                            className="search-input"
+                            style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.05)' }}
+                          >
+                            <option value="status">Status HTTP do Servidor</option>
+                            <option value="body">Texto no Corpo da Resposta</option>
+                            <option value="regex">Expressão Regular (Regex)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>Valor Esperado (Match Value)</label>
+                          <input 
+                            type="text" 
+                            placeholder="ex: 200 ou root:x:0:" 
+                            value={exploitMatchValue}
+                            onChange={(e) => setExploitMatchValue(e.target.value)}
+                            className="search-input"
+                            style={{ padding: '0.75rem' }}
+                          />
+                        </div>
+                      </div>
+
+                      <button type="submit" disabled={exploitLoading} className="btn-scan" style={{ width: '100%', gap: '0.5rem' }}>
+                        <Send size={16} /> {exploitLoading ? 'Disparando Requisição...' : 'Disparar Exploit'}
+                      </button>
+                    </form>
+
+                    {exploitError && (
+                      <div className="finding-card severity-Critical" style={{ marginTop: '1.5rem' }}>
+                        <div className="finding-header">
+                          <span className="finding-title"><XCircle size={18} /> Erro de Rede</span>
+                        </div>
+                        <p>{exploitError}</p>
+                      </div>
+                    )}
+
+                    {exploitResult && (
+                      <div style={{ marginTop: '1.5rem' }}>
+                        {/* Status banner */}
+                        <div 
+                          className="glass-panel" 
+                          style={{ 
+                            padding: '1rem', 
+                            textAlign: 'center', 
+                            fontWeight: 'bold', 
+                            fontSize: '1.1rem',
+                            border: `1px solid ${exploitResult.matched ? 'var(--color-danger)' : 'var(--color-success)'}`,
+                            background: exploitResult.matched ? 'rgba(239, 68, 68, 0.08)' : 'rgba(16, 185, 129, 0.08)',
+                            color: exploitResult.matched ? 'var(--color-danger)' : 'var(--color-success)',
+                            marginBottom: '1rem',
+                            borderRadius: '12px'
+                          }}
+                        >
+                          {exploitResult.matched ? '🔥 ALVO VULNERÁVEL (Exploit Correspondente!)' : '✅ VULNERABILIDADE NÃO CONFIRMADA (Exploit Negado)'}
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1rem' }}>
+                          <div className="ssl-stat-card">
+                            <div className="ssl-stat-lbl">URL Executada</div>
+                            <div className="ssl-stat-val" style={{ fontSize: '0.85rem' }}>{exploitResult.url}</div>
+                          </div>
+                          <div className="ssl-stat-card">
+                            <div className="ssl-stat-lbl">Status da Resposta</div>
+                            <div className="ssl-stat-val">{exploitResult.status} {exploitResult.statusText}</div>
+                          </div>
+                        </div>
+
+                        {/* Response preview */}
+                        <div style={{ marginTop: '1rem' }}>
+                          <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>Corpo da Resposta (Body Excerpt)</label>
+                          <pre style={{ 
+                            padding: '1rem', 
+                            background: '#0a0915', 
+                            borderRadius: '8px', 
+                            overflowX: 'auto', 
+                            fontSize: '0.8rem', 
+                            fontFamily: 'monospace', 
+                            color: '#10b981',
+                            maxHeight: '200px',
+                            border: '1px solid var(--border-color)'
+                          }}>
+                            {exploitResult.bodyExcerpt || '[Sem corpo retornado]'}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 5. PORTS TAB */}
                 {activeTab === 'ports' && (
                   <div>
                     <h3 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '0.75rem' }}>Portas TCP Escaneadas</h3>
@@ -799,7 +1107,7 @@ function App() {
                   </div>
                 )}
 
-                {/* 4. HEADERS TAB WITH REMEDIATION CODE TABS */}
+                {/* 6. HEADERS TAB WITH REMEDIATION CODE TABS */}
                 {activeTab === 'headers' && (
                   <div>
                     <h3 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '1.25rem' }}>Cabeçalhos de Segurança HTTP</h3>
@@ -883,7 +1191,7 @@ function App() {
                   </div>
                 )}
 
-                {/* 5. SSL TAB */}
+                {/* 7. SSL TAB */}
                 {activeTab === 'ssl' && (
                   <div>
                     <h3 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '1.25rem' }}>Informações e Validação SSL/TLS</h3>
@@ -972,7 +1280,7 @@ function App() {
                   </div>
                 )}
 
-                {/* 6. EXPOSED FILES TAB */}
+                {/* 8. EXPOSED FILES TAB */}
                 {activeTab === 'files' && (
                   <div>
                     <h3 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '0.75rem' }}>Vazamento de Arquivos de Configuração</h3>
@@ -1021,7 +1329,7 @@ function App() {
                   </div>
                 )}
 
-                {/* 7. DNS TAB */}
+                {/* 9. DNS TAB */}
                 {activeTab === 'dns' && (
                   <div>
                     <h3 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '1.25rem' }}>DNS e Políticas Anti-Spoofing de Email</h3>

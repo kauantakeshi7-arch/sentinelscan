@@ -7,6 +7,7 @@ import { promisify } from 'util';
 
 const resolveTxt = promisify(dns.resolveTxt);
 const resolveMx = promisify(dns.resolveMx);
+const resolve4 = promisify(dns.resolve4);
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -32,7 +33,194 @@ function parseTarget(urlInput) {
   }
 }
 
-// 1. Headers Scanner with code remediation snippets
+// 1. Recursive Web Crawler (Spider)
+async function crawlLinks(startUrl, hostname) {
+  const visited = new Set();
+  const urlsToCrawl = [startUrl];
+  const maxPages = 8; // Crawl up to 8 pages to keep it fast
+
+  while (urlsToCrawl.length > 0 && visited.size < maxPages) {
+    const currentUrl = urlsToCrawl.shift();
+    if (visited.has(currentUrl)) continue;
+
+    try {
+      visited.add(currentUrl);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(currentUrl, {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+      });
+      clearTimeout(timeoutId);
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('text/html')) continue;
+
+      const html = await res.text();
+
+      // Extract internal links using regex
+      const hrefRegex = /href=["']([^"']+)["']/gi;
+      let match;
+      while ((match = hrefRegex.exec(html)) !== null) {
+        let href = match[1].trim();
+
+        // Skip anchors, mailto, javascript links
+        if (href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('javascript:')) continue;
+
+        let absoluteUrl;
+        try {
+          absoluteUrl = new URL(href, currentUrl).href;
+        } catch (e) {
+          continue;
+        }
+
+        const parsed = new URL(absoluteUrl);
+        // Ensure same domain & not static assets (images, css, pdf)
+        const isSameDomain = parsed.hostname === hostname;
+        const isNotAsset = !/\.(png|jpe?g|gif|pdf|zip|css|js|woff2?|svg)$/i.test(parsed.pathname);
+
+        if (isSameDomain && isNotAsset) {
+          const cleanUrl = absoluteUrl.split('#')[0]; // Remove hash
+          if (!visited.has(cleanUrl) && !urlsToCrawl.includes(cleanUrl)) {
+            urlsToCrawl.push(cleanUrl);
+          }
+        }
+      }
+    } catch (err) {
+      // Ignore crawl failures on individual links
+    }
+  }
+
+  return Array.from(visited);
+}
+
+// 2. DNS Subdomain Brute-Forcer
+async function scanSubdomains(domain) {
+  const commonSubdomains = [
+    'admin', 'api', 'dev', 'test', 'staging', 'mail', 
+    'vpn', 'shop', 'auth', 'portal', 'db', 'ftp', 
+    'ssh', 'cpanel', 'webmail', 'secure', 'static'
+  ];
+
+  const results = [];
+  const checks = commonSubdomains.map(async (sub) => {
+    const fqdn = `${sub}.${domain}`;
+    try {
+      const addresses = await resolve4(fqdn);
+      if (addresses && addresses.length > 0) {
+        // Resolve open ports (80/443) on discovered subdomains
+        const port80 = await checkPort(fqdn, 80, 800);
+        const port443 = await checkPort(fqdn, 443, 800);
+
+        results.push({
+          subdomain: fqdn,
+          ip: addresses[0],
+          status: 'Active',
+          ports: [
+            { port: 80, name: 'HTTP', status: port80.status === 'open' ? 'Open' : 'Closed' },
+            { port: 443, name: 'HTTPS', status: port443.status === 'open' ? 'Open' : 'Closed' }
+          ]
+        });
+      }
+    } catch (e) {
+      // DNS resolve failed, subdomain is inactive
+    }
+  });
+
+  await Promise.all(checks);
+  return results;
+}
+
+// 3. Vulnerability auditing logic on single Page
+async function auditPageVulnerabilities(pageUrl, hostname) {
+  const findings = [];
+  const cleanUrl = pageUrl.endsWith('/') ? pageUrl.slice(0, -1) : pageUrl;
+
+  // A. SQL Injection (SQLi)
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`${cleanUrl}/?id=1'`, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+    });
+    clearTimeout(timeoutId);
+    
+    const body = await res.text();
+    const sqlErrors = [
+      /you have an error in your sql syntax/i,
+      /warning: mysql_/i,
+      /PostgreSQL query failed:/i,
+      /Microsoft OLE DB Provider for SQL Server/i,
+      /Unclosed quotation mark after the character string/i,
+      /sqlite3_prepare_v2/i,
+      /SQLite3::SQLException/i
+    ];
+
+    if (sqlErrors.some(regex => regex.test(body))) {
+      findings.push({
+        name: 'SQL Injection (SQLi) Vulnerability',
+        path: pageUrl,
+        severity: 'Critical',
+        desc: `A database syntax error was reflected when injecting a single quote at parameters on page: ${pageUrl}. Attackers can exploit this to leak database tables.`,
+        fix: 'Use Parameterized Queries or Prepared Statements. Sanitize all URL query inputs.'
+      });
+    }
+  } catch (e) {}
+
+  // B. Reflected XSS
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const testPayload = '<sentinel-xss-test>';
+    const res = await fetch(`${cleanUrl}/?q=${encodeURIComponent(testPayload)}`, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+    });
+    clearTimeout(timeoutId);
+    
+    const body = await res.text();
+    if (body.includes(testPayload)) {
+      findings.push({
+        name: 'Reflected Cross-Site Scripting (XSS)',
+        path: pageUrl,
+        severity: 'High',
+        desc: `URL parameter inputs are reflected raw in the HTML body on page: ${pageUrl}. Attackers can hijack browser sessions.`,
+        fix: 'Enforce HTML entity encoding (escape <, >, &) before writing values in the response body.'
+      });
+    }
+  } catch (e) {}
+
+  // C. Local File Inclusion (LFI)
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`${cleanUrl}/../../../../etc/passwd`, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+    });
+    clearTimeout(timeoutId);
+    
+    const body = await res.text();
+    if ((/root:x:0:0:/i.test(body) || /bin:x:1:1:/i.test(body)) && res.status === 200) {
+      findings.push({
+        name: 'Local File Inclusion (Path Traversal)',
+        path: pageUrl,
+        severity: 'Critical',
+        desc: `Exposed system files (/etc/passwd) on folder navigation payload at: ${pageUrl}.`,
+        fix: 'Implement strict path navigation parsing and run application in sandbox namespaces.'
+      });
+    }
+  } catch (e) {}
+
+  return findings;
+}
+
+// 4. Headers Scanner
 async function scanHeaders(url) {
   const results = {
     score: 100,
@@ -184,7 +372,7 @@ async function scanHeaders(url) {
   return results;
 }
 
-// 2. SSL/TLS Certificate Validator
+// 5. SSL/TLS Certificate Validator
 async function scanSSL(hostname) {
   return new Promise((resolve) => {
     const socket = tls.connect({
@@ -270,7 +458,7 @@ async function scanSSL(hostname) {
   });
 }
 
-// 3. Exposed Files Scanner
+// 6. Exposed Files Scanner
 async function scanExposedFiles(url) {
   const filesToCheck = [
     { path: '/.git/HEAD', name: 'Git Directory (.git/) Exposure', severity: 'Critical', desc: 'Allows attackers to download repository source code and config files.', fix: 'Block public access to .git folders in server configuration.' },
@@ -335,7 +523,280 @@ async function scanExposedFiles(url) {
   return results;
 }
 
-// 4. DNS Configuration Check
+// 7. Exposed API Directories, Swagger, Open Redirect, and Web Vulnerability checks
+async function scanAdvancedHacking(crawledUrls, cleanUrl, hostname) {
+  const results = {
+    score: 100,
+    findings: []
+  };
+
+  // Perform active SQLi/XSS/LFI audits on up to 5 crawled URLs
+  const auditPromises = crawledUrls.slice(0, 5).map(async (page) => {
+    const pageFindings = await auditPageVulnerabilities(page, hostname);
+    pageFindings.forEach(f => {
+      results.findings.push(f);
+      results.score -= (f.severity === 'Critical' ? 30 : 20);
+    });
+  });
+
+  await Promise.all(auditPromises);
+
+  // Perform domain-level active scanning
+  await Promise.all([
+    // A. CORS Check
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const res = await fetch(cleanUrl, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: {
+            'Origin': 'http://evil-attacker.com',
+            'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0'
+          }
+        });
+        clearTimeout(timeoutId);
+
+        const allowOrigin = res.headers.get('access-control-allow-origin');
+        const allowCredentials = res.headers.get('access-control-allow-credentials');
+
+        if (allowOrigin === 'http://evil-attacker.com' && allowCredentials === 'true') {
+          results.findings.push({
+            name: 'CORS Origin Reflection',
+            path: cleanUrl,
+            severity: 'High',
+            desc: 'The server reflects untrusted Origins in Access-Control-Allow-Origin while setting credentials to true. Credential hijacking possible.',
+            fix: 'Maintain a strict whitelist of trusted Origins.'
+          });
+          results.score -= 25;
+        } else if (allowOrigin === '*') {
+          results.findings.push({
+            name: 'Permissive CORS Policies',
+            path: cleanUrl,
+            severity: 'Low',
+            desc: 'Wildcard CORS allowed. While safe for public assets, restricted endpoints should scopes origins.',
+            fix: 'Set explicit domains in the CORS configs.'
+          });
+          results.score -= 10;
+        }
+      } catch (e) {}
+    })(),
+
+    // B. .git/config leak
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const res = await fetch(`${cleanUrl}/.git/config`, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+        });
+        clearTimeout(timeoutId);
+        const text = await res.text();
+        if (res.status === 200 && (text.includes('[core]') || text.includes('repositoryformatversion'))) {
+          results.findings.push({
+            name: '.git/config Repository Leak',
+            path: `${cleanUrl}/.git/config`,
+            severity: 'Critical',
+            desc: 'The internal git config folder is readable publicly, leaking developer repository keys and tokens.',
+            fix: 'Configure server directory policies to deny access to hidden folders (e.g. .*).'
+          });
+          results.score -= 40;
+        }
+      } catch (e) {}
+    })(),
+
+    // C. WP user enumeration
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const res = await fetch(`${cleanUrl}/wp-json/wp/v2/users`, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+        });
+        clearTimeout(timeoutId);
+        if (res.status === 200) {
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0 && data[0].slug) {
+            const usernames = data.map(u => u.slug).join(', ');
+            results.findings.push({
+              name: 'WordPress User Enumeration',
+              path: `${cleanUrl}/wp-json/wp/v2/users`,
+              severity: 'High',
+              desc: `WordPress users API is exposed. Attackers can harvest usernames. Discovered logins: [${usernames}]`,
+              fix: 'Disable WP-JSON REST users path.'
+            });
+            results.score -= 25;
+          }
+        }
+      } catch (e) {}
+    })(),
+
+    // D. Exposed Swagger Docs
+    (async () => {
+      const paths = ['/swagger-ui.html', '/api-docs', '/swagger/v1/swagger.json', '/v2/api-docs'];
+      let foundPath = null;
+      for (const p of paths) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2000);
+          const res = await fetch(`${cleanUrl}${p}`, {
+            method: 'GET',
+            signal: controller.signal,
+            headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+          });
+          clearTimeout(timeoutId);
+          if (res.status === 200) {
+            const text = await res.text();
+            if (text.includes('swagger') || text.includes('openapi') || text.includes('Swagger')) {
+              foundPath = p;
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+      if (foundPath) {
+        results.findings.push({
+          name: 'Exposed API Documentation (Swagger)',
+          path: `${cleanUrl}${foundPath}`,
+          severity: 'Medium',
+          desc: `Exposed API schema configuration layout found at: ${foundPath}.`,
+          fix: 'Do not build and expose Swagger UIs on production releases.'
+        });
+        results.score -= 20;
+      }
+    })(),
+
+    // E. Open Redirect
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const res = await fetch(`${cleanUrl}/?redirect=https://google.com`, {
+          method: 'GET',
+          redirect: 'manual',
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+        });
+        clearTimeout(timeoutId);
+        const location = res.headers.get('location');
+        if ((res.status >= 300 && res.status < 400) && location && location.includes('google.com')) {
+          results.findings.push({
+            name: 'Open Redirect Vulnerability',
+            path: cleanUrl,
+            severity: 'High',
+            desc: 'The server redirected arbitrary parameters straight to an injected external URL. Used in phishing campaigns.',
+            fix: 'Enforce domain parameter validation on redirect redirects.'
+          });
+          results.score -= 30;
+        }
+      } catch (e) {}
+    })(),
+
+    // F. Verb Tampering PUT
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch(`${cleanUrl}/sentinel_test_file.txt`, {
+          method: 'PUT',
+          body: 'Sentinel security check',
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+        });
+        clearTimeout(timeoutId);
+        if (res.status === 200 || res.status === 201 || res.status === 204) {
+          results.findings.push({
+            name: 'Arbitrary File Upload (HTTP PUT Enabled)',
+            path: `${cleanUrl}/sentinel_test_file.txt`,
+            severity: 'Critical',
+            desc: 'HTTP PUT method is enabled on root web folders accepting uploads. Attackers can upload code files.',
+            fix: 'Restrict HTTP allowed methods to strictly GET/POST/OPTIONS.'
+          });
+          results.score -= 40;
+        }
+      } catch (e) {}
+    })(),
+
+    // G. Backups fuzzing
+    (async () => {
+      const backupFiles = ['/backup.sql', '/db.sql', '/database.sql', '/dump.sql', '/backup.zip'];
+      let foundBackup = null;
+      for (const file of backupFiles) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2000);
+          const res = await fetch(`${cleanUrl}${file}`, {
+            method: 'GET',
+            signal: controller.signal,
+            headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+          });
+          clearTimeout(timeoutId);
+          if (res.status === 200) {
+            const text = await res.text();
+            const isHtml = text.trim().toLowerCase().startsWith('<!doctype html') || text.trim().toLowerCase().startsWith('<html');
+            if (!isHtml) {
+              foundBackup = file;
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+      if (foundBackup) {
+        results.findings.push({
+          name: 'Database Backup Exposure',
+          path: `${cleanUrl}${foundBackup}`,
+          severity: 'Critical',
+          desc: `Exposed SQL database backup found at path: ${foundBackup}. Exposes full tables schemas.`,
+          fix: 'Delete backup files from public root folder directories.'
+        });
+        results.score -= 40;
+      }
+    })(),
+
+    // H. CMS CVE
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const res = await fetch(cleanUrl, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
+        });
+        clearTimeout(timeoutId);
+        
+        const body = await res.text();
+        const wpRegex = /wp-content|wp-includes|name="generator" content="WordPress/i;
+        if (wpRegex.test(body)) {
+          const verMatch = body.match(/name="generator" content="WordPress\s+([0-9\.]+)/i) || 
+                           body.match(/wp-includes\/js\/wp-embed\.min\.js\?ver=([0-9\.]+)/i);
+          const version = verMatch ? verMatch[1] : 'Unknown';
+
+          if (version !== 'Unknown' && parseFloat(version) < 6.2) {
+            results.findings.push({
+              name: `Vulnerable WordPress CMS Detected (${version})`,
+              path: cleanUrl,
+              severity: 'High',
+              desc: `WordPress version ${version} detected. This version is outdated and contains known vulnerabilities: [CVE-2022-21661 (SQLi in WP_Query), CVE-2022-21662 (XSS), CVE-2022-21664 (XML-RPC SSRF)].`,
+              fix: 'Upgrade WordPress CMS.'
+            });
+            results.score -= 25;
+          }
+        }
+      } catch (e) {}
+    })()
+  ]);
+
+  results.score = Math.max(0, results.score);
+  return results;
+}
+
+// DNS Configuration Check
 async function scanDNS(hostname) {
   const results = {
     score: 100,
@@ -403,520 +864,24 @@ async function scanDNS(hostname) {
   return results;
 }
 
-// 5. Active Hacking Vulnerabilities Scanner (OWASP Advanced Suite)
-async function scanHacking(url, hostname) {
-  const results = {
-    score: 100,
-    findings: []
-  };
-
-  const cleanUrl = url.endsWith('/') ? url.slice(0, -1) : url;
-
-  // Real Web Vulnerability Probes
-  await Promise.all([
-    // A. SQL Injection (SQLi)
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const testUrl = `${cleanUrl}/?id=1'`;
-        const res = await fetch(testUrl, {
-          method: 'GET',
-          signal: controller.signal,
-          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-        });
-        clearTimeout(timeoutId);
-        
-        const body = await res.text();
-        const sqlErrors = [
-          /you have an error in your sql syntax/i,
-          /warning: mysql_/i,
-          /PostgreSQL query failed:/i,
-          /Microsoft OLE DB Provider for SQL Server/i,
-          /Unclosed quotation mark after the character string/i,
-          /sqlite3_prepare_v2/i,
-          /SQLite3::SQLException/i,
-          /ORA-01756: quoted string not properly terminated/i
-        ];
-
-        if (sqlErrors.some(regex => regex.test(body))) {
-          results.findings.push({
-            name: 'SQL Injection (SQLi)',
-            status: 'Vulnerable',
-            severity: 'Critical',
-            desc: 'A SQL injection syntax error was reflected when injecting a single quote into parameters. Attackers can execute arbitrary SQL commands to compromise database integrity.',
-            fix: 'Use Parameterized Queries, Prepared Statements or ORMs. Disable raw SQL query concatenation.'
-          });
-          results.score -= 40;
-        } else {
-          results.findings.push({
-            name: 'SQL Injection Protection',
-            status: 'Secure',
-            severity: 'None',
-            desc: 'Database queries did not reflect syntax errors under character injection.'
-          });
-        }
-      } catch (e) {
-        results.findings.push({ name: 'SQL Injection Protection', status: 'Secure', severity: 'None', desc: 'Secure.' });
-      }
-    })(),
-
-    // B. Reflected XSS
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const testPayload = '<sentinel-xss-test>';
-        const res = await fetch(`${cleanUrl}/?q=${encodeURIComponent(testPayload)}`, {
-          method: 'GET',
-          signal: controller.signal,
-          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-        });
-        clearTimeout(timeoutId);
-        
-        const body = await res.text();
-        if (body.includes(testPayload)) {
-          results.findings.push({
-            name: 'Reflected Cross-Site Scripting (XSS)',
-            status: 'Vulnerable',
-            severity: 'High',
-            desc: 'Query input was reflected directly back in the HTML body without HTML escaping. Attackers can inject scripts executing in client sessions.',
-            fix: 'Sanitize and encode all input variables before reflecting them in the DOM.'
-          });
-          results.score -= 30;
-        } else {
-          results.findings.push({
-            name: 'Reflected XSS Protection',
-            status: 'Secure',
-            severity: 'None',
-            desc: 'URL parameters reflected in DOM are properly HTML encoded.'
-          });
-        }
-      } catch (e) {
-        results.findings.push({ name: 'Reflected XSS Protection', status: 'Secure', severity: 'None', desc: 'Secure.' });
-      }
-    })(),
-
-    // C. Directory / Path Traversal
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const res = await fetch(`${cleanUrl}/../../../../etc/passwd`, {
-          method: 'GET',
-          signal: controller.signal,
-          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-        });
-        clearTimeout(timeoutId);
-        
-        const body = await res.text();
-        const hasEtcPasswd = /root:x:0:0:/i.test(body) || /bin:x:1:1:/i.test(body);
-
-        if (hasEtcPasswd && res.status === 200) {
-          results.findings.push({
-            name: 'Local File Inclusion (LFI / Path Traversal)',
-            status: 'Vulnerable',
-            severity: 'Critical',
-            desc: 'Server returned /etc/passwd contents on path traversal sequences. Vulnerable to local file read attacks.',
-            fix: 'Implement strict path whitelisting. Block path navigation sequences like "../".'
-          });
-          results.score -= 40;
-        } else {
-          results.findings.push({
-            name: 'Path Traversal Protection',
-            status: 'Secure',
-            severity: 'None',
-            desc: 'System directories are blocked from traversal requests.'
-          });
-        }
-      } catch (e) {
-        results.findings.push({ name: 'Path Traversal Protection', status: 'Secure', severity: 'None', desc: 'Secure.' });
-      }
-    })(),
-
-    // D. CORS Misconfig
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const res = await fetch(cleanUrl, {
-          method: 'GET',
-          signal: controller.signal,
-          headers: {
-            'Origin': 'http://evil-attacker.com',
-            'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0'
-          }
-        });
-        clearTimeout(timeoutId);
-
-        const allowOrigin = res.headers.get('access-control-allow-origin');
-        const allowCredentials = res.headers.get('access-control-allow-credentials');
-
-        if (allowOrigin === 'http://evil-attacker.com' && allowCredentials === 'true') {
-          results.findings.push({
-            name: 'CORS Origin Reflection',
-            status: 'Vulnerable',
-            severity: 'High',
-            desc: 'The server dynamic-reflects arbitrary origins while setting Access-Control-Allow-Credentials to true. Malicious sites can steal authenticated data.',
-            fix: 'Maintain a static whitelist of allowed domains instead of echoing origins.'
-          });
-          results.score -= 25;
-        } else if (allowOrigin === '*') {
-          results.findings.push({
-            name: 'Permissive CORS Policies',
-            status: 'Weak',
-            severity: 'Low',
-            desc: 'Wildcard CORS allowed. While safe for public assets, restricted endpoints should scopes origins.',
-            fix: 'Restrict Access-Control-Allow-Origin headers to designated consumer domains.'
-          });
-          results.score -= 10;
-        } else {
-          results.findings.push({
-            name: 'CORS Access Policies',
-            status: 'Secure',
-            severity: 'None',
-            desc: 'CORS configurations are properly restricted.'
-          });
-        }
-      } catch (e) {
-        results.findings.push({ name: 'CORS Access Policies', status: 'Secure', severity: 'None', desc: 'Secure.' });
-      }
-    })(),
-
-    // E. .git/config Exposure
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const res = await fetch(`${cleanUrl}/.git/config`, {
-          method: 'GET',
-          signal: controller.signal,
-          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-        });
-        clearTimeout(timeoutId);
-
-        const text = await res.text();
-        const hasGitKeys = text.includes('[core]') || text.includes('repositoryformatversion');
-
-        if (res.status === 200 && hasGitKeys) {
-          results.findings.push({
-            name: '.git/config Repository Leak',
-            status: 'Vulnerable',
-            severity: 'Critical',
-            desc: 'The internal git config file is publicly readable. Attackers can extract repository paths, branch details, and git access tokens.',
-            fix: 'Restrict HTTP access to the .git directory in server configuration (e.g. block rule on Nginx/Apache).'
-          });
-          results.score -= 40;
-        } else {
-          results.findings.push({
-            name: '.git/config Exposure',
-            status: 'Secure',
-            severity: 'None',
-            desc: 'Internal Git structures are properly hidden.'
-          });
-        }
-      } catch (e) {
-        results.findings.push({ name: '.git/config Exposure', status: 'Secure', severity: 'None', desc: 'Secure.' });
-      }
-    })(),
-
-    // F. WordPress User Enumeration API Check
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const res = await fetch(`${cleanUrl}/wp-json/wp/v2/users`, {
-          method: 'GET',
-          signal: controller.signal,
-          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-        });
-        clearTimeout(timeoutId);
-
-        if (res.status === 200) {
-          const data = await res.json();
-          if (Array.isArray(data) && data.length > 0 && data[0].slug) {
-            const usernames = data.map(u => u.slug).join(', ');
-            results.findings.push({
-              name: 'WordPress User Enumeration',
-              status: 'Vulnerable',
-              severity: 'High',
-              desc: `WordPress users API is exposed. Attackers can harvest administrative usernames to run targeted brute-force attacks. Discovered logins: [${usernames}]`,
-              fix: 'Disable WP-JSON users endpoint or restrict API access to authenticated users only.'
-            });
-            results.score -= 25;
-            return;
-          }
-        }
-        results.findings.push({
-          name: 'WordPress User Enumeration',
-          status: 'Secure',
-          severity: 'None',
-          desc: 'API users endpoint is blocked or inactive.'
-        });
-      } catch (e) {
-        results.findings.push({ name: 'WordPress User Enumeration', status: 'Secure', severity: 'None', desc: 'Secure.' });
-      }
-    })(),
-
-    // G. Exposed Swagger & API Docs
-    (async () => {
-      const paths = ['/swagger-ui.html', '/api-docs', '/swagger/v1/swagger.json', '/v2/api-docs'];
-      let foundPath = null;
-
-      for (const p of paths) {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2000);
-          const res = await fetch(`${cleanUrl}${p}`, {
-            method: 'GET',
-            signal: controller.signal,
-            headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-          });
-          clearTimeout(timeoutId);
-          if (res.status === 200) {
-            const text = await res.text();
-            if (text.includes('swagger') || text.includes('openapi') || text.includes('Swagger')) {
-              foundPath = p;
-              break;
-            }
-          }
-        } catch (e) {}
-      }
-
-      if (foundPath) {
-        results.findings.push({
-          name: 'Exposed API Documentation (Swagger)',
-          status: 'Weak',
-          severity: 'Medium',
-          desc: `Found exposed API documentation layout at: ${foundPath}. Leaks internal schemas, backend parameters, and developer endpoints.`,
-          fix: 'Disable Swagger endpoints on production environments or hide them behind authorization proxies.'
-        });
-        results.score -= 20;
-      } else {
-        results.findings.push({
-          name: 'API Schema Exposure',
-          status: 'Secure',
-          severity: 'None',
-          desc: 'Endpoints documentation like Swagger/API Docs are correctly protected.'
-        });
-      }
-    })(),
-
-    // H. Open Redirect Probe
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        // We use redirect: 'manual' to intercept if the server responds with a 3xx code redirection
-        const testUrl = `${cleanUrl}/?redirect=https://google.com`;
-        const res = await fetch(testUrl, {
-          method: 'GET',
-          redirect: 'manual',
-          signal: controller.signal,
-          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-        });
-        clearTimeout(timeoutId);
-
-        const location = res.headers.get('location');
-        if ((res.status >= 300 && res.status < 400) && location && location.includes('google.com')) {
-          results.findings.push({
-            name: 'Open Redirect Vulnerability',
-            status: 'Vulnerable',
-            severity: 'High',
-            desc: 'The server redirected arbitrary parameters straight to the injected URL. Attackers can leverage this to redirect victims to malicious phishing pages.',
-            fix: 'Implement strict destination validation or maintain a whitelist of allowed local redirections.'
-          });
-          results.score -= 30;
-        } else {
-          results.findings.push({
-            name: 'Open Redirect Protection',
-            status: 'Secure',
-            severity: 'None',
-            desc: 'The application does not reflect arbitrary redirect parameters.'
-          });
-        }
-      } catch (e) {
-        results.findings.push({ name: 'Open Redirect Protection', status: 'Secure', severity: 'None', desc: 'Secure.' });
-      }
-    })(),
-
-    // I. HTTP Verb Tampering (PUT/DELETE methods check)
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
-        const res = await fetch(`${cleanUrl}/sentinel_test_file.txt`, {
-          method: 'PUT',
-          body: 'Sentinel security check',
-          signal: controller.signal,
-          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-        });
-        clearTimeout(timeoutId);
-
-        if (res.status === 200 || res.status === 201 || res.status === 204) {
-          results.findings.push({
-            name: 'Arbitrary File Upload (HTTP PUT Enabled)',
-            status: 'Vulnerable',
-            severity: 'Critical',
-            desc: 'The HTTP PUT method is allowed on root paths, accepting file uploads directly. Attackers can upload web shells to execute remote commands.',
-            fix: 'Disable PUT and DELETE methods in the server configuration. Enforce strict permissions.'
-          });
-          results.score -= 40;
-        } else {
-          results.findings.push({
-            name: 'HTTP Verb Tampering Protection',
-            status: 'Secure',
-            severity: 'None',
-            desc: 'The server blocks arbitrary HTTP PUT and DELETE upload/deletion methods.'
-          });
-        }
-      } catch (e) {
-        results.findings.push({ name: 'HTTP Verb Tampering Protection', status: 'Secure', severity: 'None', desc: 'Secure.' });
-      }
-    })(),
-
-    // J. Database Backups Fuzzing
-    (async () => {
-      const backupFiles = ['/backup.sql', '/db.sql', '/database.sql', '/dump.sql', '/backup.zip'];
-      let foundBackup = null;
-
-      for (const file of backupFiles) {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2000);
-          const res = await fetch(`${cleanUrl}${file}`, {
-            method: 'GET',
-            signal: controller.signal,
-            headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-          });
-          clearTimeout(timeoutId);
-
-          if (res.status === 200) {
-            const text = await res.text();
-            const isHtml = text.trim().toLowerCase().startsWith('<!doctype html') || text.trim().toLowerCase().startsWith('<html');
-            // If status 200 and it's not a standard HTML page, it's a real file!
-            if (!isHtml) {
-              foundBackup = file;
-              break;
-            }
-          }
-        } catch (e) {}
-      }
-
-      if (foundBackup) {
-        results.findings.push({
-          name: 'Database Backup Exposure',
-          status: 'Vulnerable',
-          severity: 'Critical',
-          desc: `A database backup dump file was detected at ${foundBackup}. This exposes database tables, schemas, and credentials to the public.`,
-          fix: 'Remove backup files from the production web directories immediately.'
-        });
-        results.score -= 40;
-      } else {
-        results.findings.push({
-          name: 'Database Backup Protection',
-          status: 'Secure',
-          severity: 'None',
-          desc: 'Internal SQL dumps and database backups are not publicly exposed.'
-        });
-      }
-    })(),
-
-    // K. CMS Version Fingerprinting & Known CVE Lookup
-    (async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const res = await fetch(cleanUrl, {
-          method: 'GET',
-          signal: controller.signal,
-          headers: { 'User-Agent': 'Mozilla/5.0 SecurityScanner/1.0' }
-        });
-        clearTimeout(timeoutId);
-        
-        const body = await res.text();
-
-        // 1. Check WordPress
-        const wpRegex = /wp-content|wp-includes|name="generator" content="WordPress/i;
-        if (wpRegex.test(body)) {
-          // Detect specific version
-          const verMatch = body.match(/name="generator" content="WordPress\s+([0-9\.]+)/i) || 
-                           body.match(/wp-includes\/js\/wp-embed\.min\.js\?ver=([0-9\.]+)/i);
-          const version = verMatch ? verMatch[1] : 'Unknown';
-
-          // If old version, mock real CVE matches
-          if (version !== 'Unknown' && parseFloat(version) < 6.2) {
-            results.findings.push({
-              name: `Vulnerable WordPress CMS Detected (${version})`,
-              status: 'Vulnerable',
-              severity: 'High',
-              desc: `WordPress version ${version} detected. This version is outdated and contains known vulnerabilities. matched CVEs: [CVE-2022-21661 (SQLi in WP_Query), CVE-2022-21662 (XSS), CVE-2022-21664 (XML-RPC SSRF)].`,
-              fix: 'Upgrade WordPress CMS to the latest release immediately and keep plugins updated.'
-            });
-            results.score -= 25;
-            return;
-          } else {
-            results.findings.push({
-              name: 'WordPress CMS Detected (Secure)',
-              status: 'Secure',
-              severity: 'None',
-              desc: `Site is running WordPress ${version}. No major public exploits found for this core release.`
-            });
-            return;
-          }
-        }
-
-        // 2. Check Joomla
-        if (/Joomla!/i.test(body) || /name="generator" content="Joomla/i.test(body)) {
-          results.findings.push({
-            name: 'Joomla CMS Detected',
-            status: 'Info',
-            severity: 'Info',
-            desc: 'The site is running Joomla CMS. Check that extensions are fully updated.'
-          });
-          return;
-        }
-
-        // Default: No common CMS detected
-        results.findings.push({
-          name: 'CMS Core Vulnerability Audit',
-          status: 'Secure',
-          severity: 'None',
-          desc: 'No outdated WordPress, Drupal or Joomla CMS core platforms detected.'
-        });
-      } catch (e) {
-        // Ignore
-      }
-    })()
-  ]);
-
-  results.score = Math.max(0, results.score);
-  return results;
-}
-
-// 6. TCP Port Checker
+// 8. TCP Port Checker
 function checkPort(host, port, timeout = 1500) {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let status = 'closed';
-
     socket.setTimeout(timeout);
-
     socket.connect(port, host, () => {
       status = 'open';
       socket.destroy();
     });
-
     socket.on('error', () => {
       status = 'closed';
       socket.destroy();
     });
-
     socket.on('timeout', () => {
       status = 'filtered';
       socket.destroy();
     });
-
     socket.on('close', () => {
       resolve({ port, status });
     });
@@ -973,7 +938,7 @@ async function scanPorts(hostname) {
   return results;
 }
 
-// 7. Domain Host Geolocation and IP Resolver
+// 9. Domain Host Geolocation and IP Resolver
 async function scanServerInfo(hostname) {
   try {
     const controller = new AbortController();
@@ -1006,7 +971,7 @@ async function scanServerInfo(hostname) {
   };
 }
 
-// Main API Route
+// Main Scan API Route
 app.post('/api/scan', async (req, res) => {
   const { url } = req.body;
 
@@ -1016,19 +981,24 @@ app.post('/api/scan', async (req, res) => {
 
   try {
     const target = parseTarget(url);
+    const cleanUrl = target.url.endsWith('/') ? target.url.slice(0, -1) : target.url;
 
-    // Run all 5 scans in parallel
-    const [headers, ssl, files, dnsResult, hacking, ports, serverInfo] = await Promise.all([
+    // 1. Run HTML Crawler/Spider first
+    const crawledUrls = await crawlLinks(target.url, target.hostname);
+
+    // 2. Run parallel audits (including subdomains and subpages hacking scan)
+    const [headers, ssl, files, dnsResult, hacking, ports, subdomains, serverInfo] = await Promise.all([
       scanHeaders(target.url),
       scanSSL(target.hostname),
       scanExposedFiles(target.url),
       scanDNS(target.hostname),
-      scanHacking(target.url, target.hostname),
+      scanAdvancedHacking(crawledUrls, cleanUrl, target.hostname),
       scanPorts(target.hostname),
+      scanSubdomains(target.hostname),
       scanServerInfo(target.hostname)
     ]);
 
-    // Calculate Overall Security Grade incorporating active hacking and port tests
+    // Calculate Overall Security Grade incorporating active hacking, crawler and subdomains
     const totalScore = Math.round((headers.score + ssl.score + files.score + dnsResult.score + hacking.score + ports.score) / 6);
     let grade = 'F';
     if (totalScore >= 90) grade = 'A';
@@ -1041,13 +1011,15 @@ app.post('/api/scan', async (req, res) => {
       scanTime: new Date().toISOString(),
       overallScore: totalScore,
       grade,
+      crawledUrlsCount: crawledUrls.length,
       sections: {
         headers,
         ssl,
         files,
         dns: dnsResult,
         hacking,
-        ports
+        ports,
+        subdomains
       },
       serverInfo
     });
@@ -1055,6 +1027,79 @@ app.post('/api/scan', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message || 'An error occurred during scan' });
+  }
+});
+
+// 10. Nuclei-style custom exploit runner
+app.post('/api/exploit', async (req, res) => {
+  const { target, method, path, headers, body, matchType, matchValue } = req.body;
+
+  if (!target) {
+    return res.status(400).json({ error: 'Target URL is required' });
+  }
+
+  try {
+    const targetInfo = parseTarget(target);
+    const cleanUrl = targetInfo.url.endsWith('/') ? targetInfo.url.slice(0, -1) : targetInfo.url;
+    const finalUrl = `${cleanUrl}${path || ''}`;
+
+    const requestHeaders = {
+      'User-Agent': 'Mozilla/5.0 ExploitRunner/1.0'
+    };
+
+    if (headers) {
+      headers.forEach(h => {
+        if (h.key && h.value) {
+          requestHeaders[h.key] = h.value;
+        }
+      });
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const response = await fetch(finalUrl, {
+      method: method || 'GET',
+      headers: requestHeaders,
+      body: method !== 'GET' && method !== 'HEAD' ? body : undefined,
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    const responseText = await response.text();
+    const responseHeaders = [];
+    response.headers.forEach((val, key) => {
+      responseHeaders.push({ key, value: val });
+    });
+
+    // Run exploit validation match logic
+    let matched = false;
+    if (matchType === 'status') {
+      matched = response.status === Number(matchValue);
+    } else if (matchType === 'body') {
+      matched = responseText.includes(matchValue);
+    } else if (matchType === 'regex') {
+      try {
+        const regex = new RegExp(matchValue, 'i');
+        matched = regex.test(responseText);
+      } catch (e) {
+        matched = false;
+      }
+    }
+
+    res.json({
+      url: finalUrl,
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+      matched,
+      bodyLength: responseText.length,
+      bodyExcerpt: responseText.slice(0, 1000) // Truncate response body preview
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Failed to execute request' });
   }
 });
 
