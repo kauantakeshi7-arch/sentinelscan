@@ -63,18 +63,24 @@ function App() {
     setTermLogs([]);
     const logs = [
       '[~] Resolvendo IP do domínio alvo...',
-      '[~] Conectando com a API GeoIP...',
-      '[+] IP resolvido: carregando provedor de nuvem...',
+      '[~] Conectando com a API GeoIP e resolvendo ISP...',
+      '[+] IP resolvido: carregando informações de geolocalização...',
       '[~] Iniciando varredura passiva de cabeçalhos...',
       '[!] Analisando ausência de CSP e HSTS...',
       '[~] Conectando soquete TLS/SSL na porta 443...',
       '[+] Soquete seguro conectado: validando cadeia de certificação...',
-      '[~] Probição de injeção ativa contra banco de dados (SQL Injection)...',
-      '[~] Testando injeção de scripts no DOM (Reflected XSS)...',
-      '[~] Verificando permissões de diretórios para vazamento de .git/.env...',
-      '[~] Resolvendo registros DNS SPF e políticas DMARC...',
-      '[~] Escaneando portas abertas de administração (FTP, SSH, Telnet)...',
-      '[+] Scanner completo! Compilando relatório final...'
+      '[~] Iniciando testes ativos OWASP Top 10...',
+      '[~] Testando injeção ativa SQL Injection (payload: \'?id=1\'\')...',
+      '[~] Testando Reflected XSS (payload: \'<sentinel-xss-test>\')...',
+      '[~] Procura por vazamento crítico de repositório (/.git/config)...',
+      '[~] Testando enumeração de usuários WordPress (/wp-json/wp/v2/users)...',
+      '[~] Fuzzing de backups expostos (/backup.sql, /db.sql, /dump.sql)...',
+      '[~] Testando vulnerabilidade de Open Redirect (?redirect=https://google.com)...',
+      '[~] Checando Verb Tampering (métodos PUT e DELETE)...',
+      '[~] Verificando APIs abertas e rotas Swagger (/swagger-ui.html)...',
+      '[~] Identificando plataforma CMS (WordPress/Drupal/Joomla) e analisando CVEs...',
+      '[~] Escaneando portas TCP administrativas expostas (FTP, SSH, Telnet)...',
+      '[+] Varredura de hacking concluída! Compilando relatório final...'
     ];
 
     let currentLogIndex = 0;
